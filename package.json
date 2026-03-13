@@ -1,0 +1,40 @@
+{
+  "name": "trust360-v0-1-pipeline",
+  "version": "0.1.0",
+  "description": "Trust360 v0.1 - Modular AI trust evaluation engine with stage-based pipeline architecture",
+  "main": "src/index.js",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "vitest --run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest --run --coverage",
+    "test:properties": "vitest --run --testNamePattern=\"Property\""
+  },
+  "keywords": [
+    "trust",
+    "ai",
+    "llm",
+    "consensus",
+    "evaluation"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.1",
+    "fastify": "^4.26.0",
+    "pino": "^8.19.0",
+    "uuid": "^9.0.1",
+    "openai": "^4.28.0",
+    "@anthropic-ai/sdk": "^0.17.1"
+  },
+  "devDependencies": {
+    "vitest": "^1.2.2",
+    "fast-check": "^3.15.1",
+    "@vitest/coverage-v8": "^1.2.2"
+  }
+}

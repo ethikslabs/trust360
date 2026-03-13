@@ -1,0 +1,9 @@
+node_modules
+tests
+coverage
+.env
+.git
+.gitignore
+README.md
+vitest.config.js
+.kiro
