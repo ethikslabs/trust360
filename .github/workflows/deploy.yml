@@ -1,0 +1,101 @@
+name: Deploy trust360
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/deploy.yml'
+
+  workflow_dispatch:
+
+env:
+  AWS_REGION:   ap-southeast-2
+  S3_BUCKET:    ethikslabs-core
+  S3_PREFIX:    deploy/trust360
+  EC2_INSTANCE: i-010dc648d4676168e
+  EC2_ROOT:     /home/ec2-user/trust360
+
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Upload to S3
+        run: |
+          aws s3 sync src/  s3://$S3_BUCKET/$S3_PREFIX/src/
+          aws s3 cp package.json      s3://$S3_BUCKET/$S3_PREFIX/package.json
+          aws s3 cp package-lock.json s3://$S3_BUCKET/$S3_PREFIX/package-lock.json
+
+      - name: Deploy to EC2 via SSM
+        id: ssm-command
+        run: |
+          cat > /tmp/ec2-deploy.sh << 'DEPLOY'
+          set -e
+          REGION="ap-southeast-2"
+          S3_BUCKET="ethikslabs-core"
+          S3_PREFIX="deploy/trust360"
+          EC2_ROOT="/home/ec2-user/trust360"
+
+          echo "=== Syncing from S3 ==="
+          mkdir -p $EC2_ROOT
+          aws s3 sync s3://$S3_BUCKET/$S3_PREFIX/ $EC2_ROOT/ --region $REGION
+
+          echo "=== Installing dependencies ==="
+          cd $EC2_ROOT
+          npm install --omit=dev --silent
+
+          echo "=== Restarting PM2 ==="
+          if pm2 describe trust360 > /dev/null 2>&1; then
+            pm2 restart trust360
+          else
+            pm2 start src/server.js --name trust360
+          fi
+          pm2 save
+
+          echo "=== Deploy complete ==="
+          DEPLOY
+
+          aws s3 cp /tmp/ec2-deploy.sh s3://$S3_BUCKET/$S3_PREFIX/ec2-deploy.sh
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids $EC2_INSTANCE \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"bash <(aws s3 cp s3://$S3_BUCKET/$S3_PREFIX/ec2-deploy.sh - --region $AWS_REGION)\"]" \
+            --region $AWS_REGION \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "command_id=$COMMAND_ID" >> $GITHUB_OUTPUT
+
+      - name: Wait for deploy
+        run: |
+          COMMAND_ID=${{ steps.ssm-command.outputs.command_id }}
+          for i in {1..20}; do
+            sleep 6
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id $COMMAND_ID --instance-id $EC2_INSTANCE \
+              --region $AWS_REGION --query "Status" --output text 2>/dev/null || echo "Pending")
+            echo "Status: $STATUS"
+            if [[ "$STATUS" == "Success" ]]; then exit 0; fi
+            if [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" ]]; then
+              aws ssm get-command-invocation --command-id $COMMAND_ID \
+                --instance-id $EC2_INSTANCE --region $AWS_REGION \
+                --query "StandardErrorContent" --output text
+              exit 1
+            fi
+          done
+          echo "Timed out." && exit 1
