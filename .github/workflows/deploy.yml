@@ -5,10 +5,10 @@ on:
     branches: [main]
     paths:
       - 'src/**'
+      - 'ecosystem.config.cjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/deploy.yml'
-
   workflow_dispatch:
 
 env:
@@ -16,7 +16,6 @@ env:
   S3_BUCKET:    ethikslabs-core
   S3_PREFIX:    deploy/trust360
   EC2_INSTANCE: i-010dc648d4676168e
-  EC2_ROOT:     /home/ec2-user/trust360
 
 jobs:
   deploy:
@@ -24,8 +23,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -36,9 +34,10 @@ jobs:
 
       - name: Upload to S3
         run: |
-          aws s3 sync src/  s3://$S3_BUCKET/$S3_PREFIX/src/
-          aws s3 cp package.json      s3://$S3_BUCKET/$S3_PREFIX/package.json
-          aws s3 cp package-lock.json s3://$S3_BUCKET/$S3_PREFIX/package-lock.json
+          aws s3 sync src/             s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/src/
+          aws s3 cp package.json       s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/package.json
+          aws s3 cp package-lock.json  s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/package-lock.json
+          aws s3 cp ecosystem.config.cjs s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/ecosystem.config.cjs
 
       - name: Deploy to EC2 via SSM
         id: ssm-command
@@ -48,54 +47,96 @@ jobs:
           REGION="ap-southeast-2"
           S3_BUCKET="ethikslabs-core"
           S3_PREFIX="deploy/trust360"
-          EC2_ROOT="/home/ec2-user/trust360"
+          REPO_ROOT="/home/ec2-user/trust360"
 
           echo "=== Syncing from S3 ==="
-          mkdir -p $EC2_ROOT
-          aws s3 sync s3://$S3_BUCKET/$S3_PREFIX/ $EC2_ROOT/ --region $REGION
+          mkdir -p $REPO_ROOT
+          aws s3 sync s3://$S3_BUCKET/$S3_PREFIX/ $REPO_ROOT/ --region $REGION
 
           echo "=== Installing dependencies ==="
-          cd $EC2_ROOT
+          cd $REPO_ROOT
           npm install --omit=dev --silent
 
+          echo "=== Injecting secrets ==="
+          get_ssm() {
+            aws ssm get-parameter --region $REGION --name "$1" \
+              --with-decryption --query "Parameter.Value" --output text 2>/dev/null || echo ""
+          }
+
+          cat > $REPO_ROOT/.env << EOF
+          NODE_ENV=production
+          PORT=3000
+          OPENAI_API_KEY=$(get_ssm "/trust360/openai/api-key")
+          ANTHROPIC_API_KEY=$(get_ssm "/ethikslabs/anthropic/api-key")
+          EOF
+
           echo "=== Restarting PM2 ==="
-          if pm2 describe trust360 > /dev/null 2>&1; then
-            pm2 restart trust360
-          else
-            pm2 start src/server.js --name trust360
-          fi
+          pm2 startOrRestart $REPO_ROOT/ecosystem.config.cjs --update-env
           pm2 save
+
+          echo "=== Verifying health ==="
+          sleep 3
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health 2>/dev/null)
+          [ "$STATUS" = "200" ] && echo "trust360 healthy" || echo "WARNING: /health returned $STATUS"
 
           echo "=== Deploy complete ==="
           DEPLOY
 
-          aws s3 cp /tmp/ec2-deploy.sh s3://$S3_BUCKET/$S3_PREFIX/ec2-deploy.sh
+          aws s3 cp /tmp/ec2-deploy.sh \
+            s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/ec2-deploy.sh
 
           COMMAND_ID=$(aws ssm send-command \
-            --instance-ids $EC2_INSTANCE \
+            --instance-ids ${{ env.EC2_INSTANCE }} \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\"bash <(aws s3 cp s3://$S3_BUCKET/$S3_PREFIX/ec2-deploy.sh - --region $AWS_REGION)\"]" \
-            --region $AWS_REGION \
+            --parameters "commands=[\"bash <(aws s3 cp s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/ec2-deploy.sh - --region ${{ env.AWS_REGION }})\"]" \
+            --region ${{ env.AWS_REGION }} \
             --query "Command.CommandId" \
             --output text)
-
           echo "command_id=$COMMAND_ID" >> $GITHUB_OUTPUT
 
-      - name: Wait for deploy
+      - name: Wait for deploy to complete
+        id: wait-deploy
         run: |
           COMMAND_ID=${{ steps.ssm-command.outputs.command_id }}
+          START_TIME=$SECONDS
           for i in {1..20}; do
             sleep 6
             STATUS=$(aws ssm get-command-invocation \
-              --command-id $COMMAND_ID --instance-id $EC2_INSTANCE \
-              --region $AWS_REGION --query "Status" --output text 2>/dev/null || echo "Pending")
+              --command-id $COMMAND_ID \
+              --instance-id ${{ env.EC2_INSTANCE }} \
+              --region ${{ env.AWS_REGION }} \
+              --query "Status" --output text 2>/dev/null || echo "Pending")
             echo "Status: $STATUS"
-            if [[ "$STATUS" == "Success" ]]; then exit 0; fi
-            if [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" ]]; then
-              aws ssm get-command-invocation --command-id $COMMAND_ID \
-                --instance-id $EC2_INSTANCE --region $AWS_REGION \
+            if [[ "$STATUS" == "Success" ]]; then
+              DURATION=$(( SECONDS - START_TIME ))
+              echo "duration_s=$DURATION" >> $GITHUB_OUTPUT
+              echo "deploy_status=success" >> $GITHUB_OUTPUT
+              exit 0
+            elif [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" ]]; then
+              aws ssm get-command-invocation \
+                --command-id $COMMAND_ID \
+                --instance-id ${{ env.EC2_INSTANCE }} \
+                --region ${{ env.AWS_REGION }} \
                 --query "StandardErrorContent" --output text
+              DURATION=$(( SECONDS - START_TIME ))
+              echo "duration_s=$DURATION" >> $GITHUB_OUTPUT
+              echo "deploy_status=failed" >> $GITHUB_OUTPUT
               exit 1
             fi
           done
+          echo "deploy_status=failed" >> $GITHUB_OUTPUT
           echo "Timed out." && exit 1
+
+      - name: Notify ARGUS
+        if: always()
+        run: |
+          NOC_SECRET=$(aws ssm get-parameter \
+            --name /ethikslabs/argus/noc-secret \
+            --with-decryption \
+            --region ${{ env.AWS_REGION }} \
+            --query "Parameter.Value" --output text)
+          curl -s -X POST https://ethikslabs.com/argus-api/api/deploy-notify \
+            -H "Content-Type: application/json" \
+            -H "x-argus-noc-secret: $NOC_SECRET" \
+            -d "{\"repo\":\"trust360\",\"status\":\"${{ steps.wait-deploy.outputs.deploy_status }}\",\"duration_s\":${{ steps.wait-deploy.outputs.duration_s || 0 }}}" \
+            || echo "ARGUS notify failed (non-blocking)"

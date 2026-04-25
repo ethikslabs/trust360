@@ -7,6 +7,7 @@
  */
 
 import 'dotenv/config';
+import { createConnection } from 'node:net';
 import { logger } from './utils/logger.js';
 import { createServer } from './server.js';
 
@@ -39,6 +40,20 @@ async function start() {
     const port = process.env.PORT || 3000;
     const host = process.env.HOST || '0.0.0.0';
     
+    // Port guard
+    await new Promise((resolve) => {
+      const probe = createConnection({ port, host: 'localhost' });
+      probe.once('connect', () => {
+        probe.destroy();
+        process.stderr.write(`[trust360] Port ${port} already in use — kill it with: kill $(lsof -ti:${port})\n`);
+        process.exit(1);
+      });
+      probe.once('error', () => {
+        probe.destroy();
+        resolve();
+      });
+    });
+
     // Start listening
     await server.listen({ port, host });
     
