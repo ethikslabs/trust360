@@ -242,14 +242,14 @@
     - **CURRENT STATUS**: 25 tests still failing across 7 test files
     - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8_
 
-  - [~] 3.8 Verify preservation tests still pass
+  - [ ] 3.8 Verify preservation tests still pass
     - **Property 2: Preservation** - No Regressions
     - **IMPORTANT**: Re-run the SAME tests from task 2 - do NOT write new tests
     - Run all 10 preservation property tests from step 2
     - **EXPECTED OUTCOME**: All tests PASS (confirms no regressions)
     - Confirm all existing behavior is preserved after fixes
 
-- [~] 4. Checkpoint - Ensure all tests pass
+- [ ] 4. Checkpoint - Ensure all tests pass
   - Run all bug condition exploration tests (should now pass)
   - Run all preservation property tests (should still pass)
   - Run existing unit tests (should all pass)
