@@ -66,8 +66,7 @@ jobs:
           cat > $REPO_ROOT/.env << EOF
           NODE_ENV=production
           PORT=3000
-          OPENAI_API_KEY=$(get_ssm "/trust360/openai/api-key")
-          ANTHROPIC_API_KEY=$(get_ssm "/ethikslabs/anthropic/api-key")
+          AI_GATEWAY_URL=http://localhost:3003/v1
           EOF
 
           echo "=== Restarting PM2 ==="
