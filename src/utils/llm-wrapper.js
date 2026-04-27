@@ -8,7 +8,7 @@ import { logModelCallStart, logModelCallSuccess, logModelCallFailed } from './lo
 
 const GATEWAY_URL = process.env.AI_GATEWAY_URL || 'http://localhost:3003/v1';
 
-const client = new OpenAI({ baseURL: GATEWAY_URL, apiKey: 'gateway' });
+const client = new OpenAI({ baseURL: GATEWAY_URL, apiKey: 'gateway', defaultHeaders: { 'X-Tenant-ID': 'trust360' } });
 
 export async function callLLM(config, prompt, traceId) {
   const startTime = Date.now();
